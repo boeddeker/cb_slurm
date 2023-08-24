@@ -15,6 +15,8 @@ For debugging: `soverview_gpus.py`
 
 To find reservations, that block an allocation: `smaintenence.py`
 
+`vatch.py` is similar to watch and viddy: Fullscreen display of the command, refresh after an interval and additionally to watch, support scrolling (mouse wheel, arrow keys, ...)
+
 ## Example output
 Note: The output contains colors, that cannot be copied to a .md file.
 
