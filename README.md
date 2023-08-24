@@ -13,7 +13,10 @@ Monitoring a job output: `stail.py <jobid>` (Sometimes a bit buggy)
 
 For debugging: `soverview_gpus.py`
 
-For find reservations, that block an allocation: `smaintenence.py`
+To find reservations, that block an allocation: `smaintenence.py`
+
+## Example output
+Note: The output contains colors, that cannot be copied to a .md file.
 
 ```
 $ mon/sacct.py $(date -d '1 hour ago' +%D-%R) --mine
