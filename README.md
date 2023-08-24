@@ -8,10 +8,12 @@ Special properties of Noctua2:
 
 
 My cmd to monitor all jobs: `vatch.py -c -n 180 "soverview.py; sacct.py $(date -d '45 hour ago' +%D-%R)"`
+
 Monitoring a job output: `stail.py <jobid>` (Sometimes a bit buggy)
 
 For debugging: `soverview_gpus.py`
 
+For find reservations, that block an allocation: `smaintenence.py`
 
 ```
 $ mon/sacct.py $(date -d '1 hour ago' +%D-%R) --mine
