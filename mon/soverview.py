@@ -602,7 +602,11 @@ def main_v2():
 
         non_printed_group_key = tuple(tres.items())
 
-        if node['state_flags'] in [[], ['COMPLETING'], ['PLANNED']]:
+        if node['state_flags'] in [
+                [],
+                # ['COMPLETING'],
+          #      ['PLANNED']
+        ]:
             partitions['state_flags'] = ''
         elif 'DRAIN' in node['state_flags']:
             partitions['state_flags'] = 'DRAIN'

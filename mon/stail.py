@@ -219,16 +219,23 @@ def main(argv, _interactive=None):
         folder, = argv
         files = list(glob.glob(folder + '/' + 'slurm-*.out'))
         # print('files', files)
-        folder_absolute = Path(folder).absolute()
-        files += [
-            # folder + '/' + Path(v).relative_to(folder)  # Why used I such an code?
-            v
-            for k, v in jobid_to_workdir().items() if folder_absolute.samefile(Path(v))]
+
+        # What was the idea of this code?
+        # folder_absolute = Path(folder).absolute()
+        # files += [
+        #     # folder + '/' + Path(v).relative_to(folder)  # Why used I such an code?
+        #     for k, v in jobid_to_workdir().items()
+        #     if folder_absolute.samefile(Path(v))
+        # ]
         # print('files', files)
+
         files = sorted(
             set(files),
             key=lambda f: [re.findall('\d+', f)[-1], f],  # Assume last number to be the job id
         )
+        # print('#' * 80)
+        # print(jobid_to_workdir())
+        # print('#' * 80)
         if len(files) == 0:
             print(f'{c.Red}Warning: Found no slurm file in current folder.{c.Color_Off}')
 

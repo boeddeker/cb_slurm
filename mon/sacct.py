@@ -8,6 +8,7 @@ import getpass
 import re
 import collections
 import math
+import time
 import textwrap
 
 class c:  # noqa
@@ -172,13 +173,14 @@ now = datetime.now()
 yesterday = now - timedelta(days=1)
 tomorrow = now + timedelta(days=1)
 lastweek = now - timedelta(days=7)
+monthago = now - timedelta(days=30)
 nextweek = now + timedelta(days=7)
 hourago = now - timedelta(hours=1)
 
 my_user = getpass.getuser()
 
 
-def format_datetime(time, highlight_hourago=False):
+def format_datetime(time, highlight_hourago=False, unknown='unknown'):
     """
     >>> format_datetime(1662456138)
     '11:22:18'
@@ -186,7 +188,8 @@ def format_datetime(time, highlight_hourago=False):
     '2022-09-05 07:35:38'
     """
     if time == 0:
-        return 'Running'
+        # return 'Running'
+        return unknown
     time = datetime.fromtimestamp(time)
     if now > time:
         # Running or Stopped
@@ -199,6 +202,8 @@ def format_datetime(time, highlight_hourago=False):
         elif time > lastweek:
             # return str(time.strftime('%a %X'))
             return str(time.strftime('%a %H:%M'))
+        elif time > monthago:
+            return str(time.strftime('%d %b %H:%M'))
         else:
             return str(time)
     else:
@@ -323,6 +328,9 @@ def main(start=None, *options):
         elapsed = timedelta(seconds=job['time']['elapsed'])
         limit = timedelta(seconds=job['time']['limit'] * 60)
 
+        # if nodes == 'None assigned':
+        #     nodes = f"{nodes}, submission: {format_datetime(job['time']['submission'])}"
+        # else:
         nodes = shorten(nodes, width=25, placeholder="...")
 
         if 'tres' in job and 'allocated' in job['tres']:
@@ -334,9 +342,9 @@ def main(start=None, *options):
                     # Slurm can only integer
                     return {f"{v['type']}": f"{int(v['count'])/1000:3.1f}G"}
                 elif v['type'] in ['node']:
-                    if v['count'] > 1:
+                    # if v['count'] > 1:
                         # return {f"{v['type']}": f"{v['count']}"}
-                        return {f"N": f"{v['count']}"}
+                    return {f"N": f"{v['count']}"}
                 elif v['type'] in ['gres']:
                     if v['name'] != 'gpu':
                         name = 'gpu'
@@ -401,9 +409,10 @@ def main(start=None, *options):
             tmp = datas_queue[job['job_id']]
             start = format_datetime(tmp['start_time'])
         else:
-            start = f'Unknown'
+            # start = f'Unknown'
+            start = f"Submit: {format_datetime(job['time']['submission'])}"
 
-        end = format_datetime(job['time']['end'], highlight_hourago=True)
+        end = format_datetime(job['time']['end'], highlight_hourago=True, unknown='Running')
 
         ratio_elapsed = elapsed / limit
 
@@ -447,10 +456,13 @@ def main(start=None, *options):
         elif state == 'COMPLETED':
             state = f'{c.Yellow}{state}{c.Color_Off}'
             # seff = True
+        elif state == 'PENDING':
+            state = f'{c.Cyan}{state}{c.Color_Off}'
+            submit_time = datas_queue[job['job_id']]["submit_time"]
+            if time.time() >= submit_time + 60 * 60 * 6:  # 6 hours
+                state += f' since {format_datetime(submit_time)}'
         elif state == 'CANCELLED':
             pass
-            # seff = True
-
         if job['kill_request_user'] is not None:
             if state == 'CANCELLED':
                 state = f"{state} by {job['kill_request_user']}"
@@ -460,6 +472,15 @@ def main(start=None, *options):
 
         if job['state']['reason'] == 'None':
             state = f"{state}"
+
+            if job['job_id'] in datas_queue:
+                reason = datas_queue[job['job_id']]['state_reason']
+                state_description = datas_queue[job['job_id']]['state_description']
+                if reason != 'None':
+                    if state_description:
+                        state = f"{state}({reason}, {state_description})"
+                    else:
+                        state = f"{state}({reason})"
         else:
             state = f"{state}({job['state']['reason']})"
 
@@ -546,6 +567,26 @@ def main(start=None, *options):
             'Nodes': nodes,
         })
 
+    job_ids = [job['job_id'] for job in data['jobs']]
+    for k, v in datas_queue.items():
+        if k in job_ids:
+            pass
+        else:
+            lines2.append({
+                'User': v['user_name'],
+                'JobID': k,
+                'Name': v['name'],
+                'State': v['job_state'],# + f' {format_datetime(v["submit_time"])}',
+                'Elapsed': '',
+                'Start': format_datetime(v['start_time'], unknown=f'Submit: {format_datetime(v["submit_time"])}'),
+                'End': '',
+                'Acc': v['account'],
+                'QoS': v['qos'],
+                # **v,
+                'Partition': v['partition'],
+                'Nodes': v['state_reason'] + v['nodes'],
+            })
+
     print_table(lines2,
                 # just='lrllrrlrrrrrllr',
                 just={
@@ -580,13 +621,20 @@ def main(start=None, *options):
             key = tuple(
                 [('State', 'RUNNING')]
                 + [(k, line[k]) for k in ['Partition', 'User']])
+        elif 'pending' in strip_ansi(line['State']).lower():
+            key = tuple(
+                [('State', 'PENDING')]
+                + [(k, line[k]) for k in ['Partition', 'User']])
         else:
             continue
             key = tuple(
                 [('State', 'NOT RUNNING')]
                 + [(k, line[k]) for k in ['Partition', 'User']])
 
-        mem = line['mem']
+        try:
+            mem = line['mem']
+        except KeyError:
+            raise ValueError(line)
         if mem.endswith('G'):
             mem = float(mem.replace('G', ''))
         else:
@@ -612,7 +660,7 @@ def main(start=None, *options):
 
         v['mem'] = f"{round(v['mem'])} GB"
 
-        if key['State'] == 'RUNNING':
+        if key['State'] in ['RUNNING']:
             def colorize_granted(value, granted_30d):
                 granted_1h = granted_30d / 30 / 24
                 if value >= granted_1h:
@@ -621,9 +669,12 @@ def main(start=None, *options):
                     return f"{c.Yellow}{value}{c.Color_Off}"
                 return value
 
+            key['State'] = f"{c.Green}{key['State']}{c.Color_Off}"
             v['gpu'] = colorize_granted(v['gpu'], granted_30d=8_196.72)
             v['cpu'] = colorize_granted(v['cpu'], granted_30d=327_868.85)
             v['billing/h'] = colorize_granted(v['billing/h'], granted_30d=327_868.85)
+        elif key['State'] in ['PENDING']:
+            pass
         else:
             ratio = v['billing'] / v['billing/h']
             v['avg time'] = f"{round(ratio, 1)} h"

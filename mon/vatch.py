@@ -11,6 +11,7 @@ Why not viddy?
 """
 
 import sys
+import os
 import subprocess
 import time
 import shlex
@@ -203,6 +204,9 @@ if __name__ == '__main__':
     parser.add_argument('cmd')
     args = vars(parser.parse_args())
     print(args)
+
+    terminal_title = f'{socket.gethostname()}: {os.path.basename(sys.argv[0])} {shlex.join(sys.argv[1:])}'
+    print(f'\33]0;{terminal_title}\a', end='', flush=True)  # https://stackoverflow.com/a/47262154/5766934
 
     with FullscreenWindow() as screen:
         main(screen, **args)
