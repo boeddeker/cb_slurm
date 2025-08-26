@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import json
 import sys
 import os
 import glob
@@ -25,7 +25,7 @@ class c:  # noqa
     @classmethod
     def print_info(cls, *args):
         args = ' '.join([str(a) for a in args])
-        print(c.Blue + args + c.Color_Off)
+        print(c.Cyan + args + c.Color_Off)
 
 
 @functools.lru_cache()
@@ -166,6 +166,60 @@ def file_from_job_id(jobid):
     return file
 
 
+def file_from_job_id_2(jobid):
+    cmd = ['scontrol', 'show', 'job', jobid, '--json']
+    try:
+        stdout = subprocess.check_output(cmd, universal_newlines=True)
+    except subprocess.CalledProcessError:
+        c.print_info(f'Could not find the job with "{shlex.join(cmd)}" (Reason: CalledProcessError)')
+    else:
+        data = json.loads(stdout)
+        if data['jobs']:
+            assert len(data['jobs']) == 1, data
+            job = data['jobs'][0]
+            # working_directory = job['current_working_directory']
+            stdout = job['standard_output']
+            stderr = job['standard_error']
+
+            if stdout or stderr:
+                c.print_info(f'Found stdout/-err with {shlex.join(cmd)}: {stdout}, {stderr}')
+                if stderr != stdout:
+                    return stdout + ' ' + stderr
+                return stdout
+
+            c.print_info(f'Found stdout/-err with {shlex.join(cmd)}, but the paths are {stdout} and {stderr}')
+
+            working_directory = Path(job['current_working_directory'])
+            files = list(working_directory.glob(f'*{jobid}*'))
+            if files:
+                c.print_info(f'Found {files} from working_directory of {shlex.join(cmd)!r}')
+                return ' '.join(map(str, files))
+            c.print_info(f'Could not find {jobid} in {working_directory} from {shlex.join(cmd)}')
+        else:
+            c.print_info(f'Could not find the job with "{shlex.join(cmd)}" (Reason: empty)')
+
+    cmd = ['sacct', '-j', jobid, '--json']
+    try:
+        stdout = subprocess.check_output(cmd, universal_newlines=True)
+    except subprocess.CalledProcessError:
+        c.print_info(f'Could not find the job with "{shlex.join(cmd)}"')
+    else:
+        data = json.loads(stdout)
+        if data['jobs']:
+            assert len(data['jobs']) == 1, data
+            job = data['jobs'][0]
+            working_directory = Path(job['working_directory'])
+            files = list(working_directory.glob(f'*{jobid}*'))
+            if files:
+                c.print_info(f'Found {files} from working_directory of {shlex.join(cmd)!r}')
+                return ' '.join(map(str, files))
+            c.print_info(f'Could not find {jobid} in {working_directory} from {shlex.join(cmd)}')
+        else:
+            c.print_info(f'Could not find the job with "{shlex.join(cmd)}"')
+
+    raise Exception(f'Could not find the job stdout/-err with scontrol and sacct')
+
+
 def main(argv, _interactive=None):
     if len(argv) == 1 and len(argv[0]) > 3:
         lines = squeue()
@@ -183,14 +237,17 @@ def main(argv, _interactive=None):
                     break
 
     if len(argv) == 1 and (argv[0].isdigit() or all([part.isdigit() for part in argv[0].split('_')])):
-        file = file_from_job_id(argv[0])
+        file = file_from_job_id_2(argv[0])
     elif len(argv) > 1 and all(
             a.isdigit() or all([part.isdigit() for part in a.split('_')])
             for a in argv
     ):
-        file = ' '.join([file_from_job_id(a) for a in argv])
+        file = ' '.join([file_from_job_id_2(a) for a in argv])
     elif len(argv) == 1 and argv[0] == 'i':
         lines = squeue()
+        if len(lines) == 0:
+            print('No jobs found')
+            return
         import questionary
         text = questionary.select(
             'Select JobID: (Only running Jobs listed)',
@@ -286,6 +343,7 @@ def main(argv, _interactive=None):
             print(f'Watch recent job in {folder}', files)
             file = files[-1]
 
+    assert file.strip(), file
     cmd = 'tail -F ' + file
 
     print(c.Yellow + '$ ' + cmd + c.Color_Off)

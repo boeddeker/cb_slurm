@@ -11,18 +11,20 @@ import math
 
 class c:  # noqa
     Color_Off = '\033[0m'  # Text Reset
-    Black = '\033[0;30m'  # Black
-    Red = '\033[0;31m'  # Red
-    Green = '\033[0;32m'  # Green
-    Yellow = '\033[0;33m'  # Yellow
-    Blue = '\033[0;34m'  # Blue
-    Purple = '\033[0;35m'  # Purple
-    Cyan = '\033[0;36m'  # Cyan
-    White = '\033[0;37m'  # White
-    BG_Black = '\033[0;40m'  # Background Black
-    BG_White = '\033[0;47m'  # Background Black
+    Black = '\033[30m'  # Black
+    Red = '\033[31m'  # Red
+    Green = '\033[32m'  # Green
+    Yellow = '\033[33m'  # Yellow
+    Blue = '\033[34m'  # Blue
+    Purple = '\033[35m'  # Purple
+    Cyan = '\033[36m'  # Cyan
+    White = '\033[37m'  # White
+    BG_Black = '\033[40m'  # Background Black
+    BG_White = '\033[47m'  # Background Black
 
-    Reverse = '\033[0;07m'  # Switch FG and BG
+    # Reset_Reverse = '\033[0;07m'  # First reset, then Switch FG and BG
+    Reverse = '\033[7m'  # Switch FG and BG
+    Reverse_Reset = '\033[27m'  # Disable switch FG and BG
 
     # 00 none
     # 01 bold
@@ -156,17 +158,24 @@ def parse_res(res, raw=False):
     >>> parse_res(tres)
     {'cpu': 128, 'mem': 485000, 'billing': 128, 'gres_gpu': 4, 'gres_gpu:a100': 4}
     """
-    if res is None:
+    # pre 23: None
+    # since 23: ''
+    if res is None or res == '':
         return {}
+
+    orig = res
 
     res = [
         r.split('=')
-        for r in res.split(',')
+        for r in res.strip().split(',')
     ]
-    res = {
-        re.sub('[\\\\/]+', '_', k): v
-        for k, v in res
-    }
+    try:
+        res = {
+            re.sub('[\\\\/]+', '_', k): v
+            for k, v in res
+        }
+    except Exception:
+        raise Exception(res, orig)
     # for k in [
     #         'cpu',
     #         r'gres_gpu:a100',
@@ -189,8 +198,10 @@ def parse_res(res, raw=False):
                 res[k] = int(res[k].replace('M', ''))
             elif res[k][-1] == 'G':
                 res[k] = int(float(res[k].replace('G', '')) * 1000)
+            elif res[k][-1] == 'T':
+                res[k] = int(float(res[k].replace('T', '')) * 1000 * 1000)
             else:
-                raise NotImplementedError(res)
+                raise NotImplementedError(k, res)
 
     # for old, new in [
     #     ('gres_gpu:a100', 'gpu'),
@@ -322,6 +333,7 @@ class RatioField:
 def pbarstring(string, ratio):
     index = round(ratio * len(string))
     string = string[:index] + c.Color_Off + string[index:]
+    # string = string[:index] + c.Reverse_Reset + string[index:]
     string = f'{c.Reverse}{string}'
     return string
 
@@ -588,19 +600,28 @@ def transpose_dict_of_dict(dct):
 
 def main_v2():
     stdout = subprocess.run(
-        f"sinfo --json",
+        # f"sinfo --json",  # pre 23.11 (maybe 22?)
+        f"scontrol show node --json",
         check=True, shell=True, stdout=subprocess.PIPE,
         universal_newlines=True).stdout
     sinfo = json.loads(stdout)
 
     data = collections.defaultdict(list)
 
-    for node in sinfo['nodes']:
+    # try:
+    nodes = sinfo['nodes'] # pre 23.11 (maybe 22?)
+
+    for node in nodes:
         partitions = {'Partition': ','.join(node['partitions'])}
         tres = parse_res(node['tres'])
         tres_used = parse_res(node['tres_used'])
 
         non_printed_group_key = tuple(tres.items())
+
+        if 'state_flags' not in node:
+            # pre 23: state_flags is a list and state a string
+            # since 23: state is a list and state_flags doesn't exits
+            node['state_flags'] = node['state']
 
         if node['state_flags'] in [
                 [],
@@ -669,7 +690,7 @@ def main_v2():
 
                 tres_used, tres = reduce(v.get('tres_used', [0]), v['tres'])
                 # tres = reduce()
-                
+
                 new[k] = (tres_used, tres)
 
 
@@ -708,15 +729,32 @@ def main_v2():
         final_print_data = []
         for d in print_data:
             new = {}
+            full = False
             for c, v in d.items():
                 if c in meta_keys:
                     new[c] = v
                 else:
                     tres_used, tres = v
+                    ratio = tres_used / tres
+                    if ratio >= 0.98:
+                        full = True
                     new[{'mem': 'mem / GB'}.get(c, c)] = pbarstring(
                         f'{to_string(tres_used, c, format_spec[c][0])} / {to_string(tres, c, format_spec[c][1])}',
-                        tres_used / tres
+                        ratio
                     )
+            color = None
+            if 'DRAIN' in new['state_flags'] or 'RESERVED' in new['state_flags']:
+                red = '\033[31m'
+                color = red
+            if full:
+                yellow = '\033[33m'
+                color = yellow
+            if color:
+                reset = '\033[0m'
+                # The replace is nessesary, because I use curtsies.FmtStr.from_str
+                # in vatch, that lacks support for the reset code 27
+                new = {k: color + str(v).replace("\033[0m", "\033[0m" + color) + reset for k, v in new.items()}
+            # print(new)
             final_print_data.append(new)
 
         # final_print_data = sorted(final_print_data, key=lambda x: [x['state_flags'], x['Partition']])

@@ -9,17 +9,23 @@ Why not viddy?
  - Only a subset of the features of viddy required.
 
 """
-
+import contextlib
+import shutil
 import sys
 import os
+import io
+import functools
 import subprocess
 import time
 import shlex
 import datetime
 import socket
+import traceback
+from pathlib import Path
 
 import curtsies.events
 from curtsies import FullscreenWindow, Input, fsarray
+
 
 
 class c:  # noqa
@@ -39,23 +45,97 @@ class c:  # noqa
         print(c.Blue + args + c.Color_Off)
 
 
-def get_msg(cmd):
-    msg = []
-    cp = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, check=False,
-                        universal_newlines=True)
-    # watch ignores the return code, hence also do it here.
-    # if cp.returncode != 0:
-    #     raise Exception(
-    #         '\n'
-    #         f'$ {cmd}  # Return code: {cp.returncode}\n'
-    #         f'{cp.stdout}\n'
-    #         f'{cp.stderr}'
-    #     )
-    if cp.stdout:
-        msg.append(cp.stdout)
-    if cp.stderr:
-        msg.append(cp.stderr)
+def manual_ansi_to_fmts(ansi_string):
+    """
+    >>> ansi_string = '\033[31m\033[7m47\033[0m / 120\033[0m'
+    >>> curtsies.FmtStr.from_str(ansi_string)
+    red(invert('47'))+' / 120'
+    >>> curtsies.FmtStr.from_str(ansi_string).chunks
+    """
+    import re
+    # Handle reverse video mode manually
+    def process_escape_sequences(text):
+        # This will replace specific escape sequences that are not supported
+        # In this example, we handle reverse video mode and reset codes
+        # Add more handling if needed
+        text = re.sub(r'\x1b\[7m', '[reverse]', text)  # Handle reverse video start
+        text = re.sub(r'\x1b\[27m', '[reverse_end]', text)  # Handle reverse video end
+        text = re.sub(r'\x1b\[0m', '[reset]', text)  # Handle reset code
+        return text
+
+    processed_text = process_escape_sequences(ansi_string)
+    return curtsies.FmtStr(processed_text)
+
+
+@functools.lru_cache(maxsize=1024)
+def which(cmd):
+    p = shutil.which(cmd)
+    assert p is not None, f'Command not found: {cmd}'
+    return p
+
+
+def _prepare_py_cmd(cmd_string):
+    import runpy
+
+    assert '|' not in cmd_string or '&' not in cmd_string, f'Not implemented for python scripts: {cmd_string}'
+
+    for cmd_argv in cmd_string.split(';'):
+        cmd, *args = shlex.split(cmd_argv)
+
+        if cmd.startswith('python'):
+            if args[0] == '-m':
+                yield args[1:], lambda: runpy.run_module(args[1], run_name='__main__')
+            elif which(args[0]):
+                yield args, lambda: runpy.run_path(args[0], run_name='__main__')
+            else:
+                raise NotImplementedError(
+                    f'{cmd_argv}\n'
+                    'Only python -m <module> and python <script> are supported.'
+                )
+        else:
+            cmd = which(cmd)
+            yield [cmd] + args, lambda: runpy.run_path(cmd, run_name='__main__')
+
+
+def get_msg(cmd, py):
+    if py:
+        import runpy
+        import contextlib
+
+        f = io.StringIO()
+        with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+            old_argv = sys.argv
+            try:
+                for argv, run in _prepare_py_cmd(cmd):
+                    sys.argv = argv
+                    try:
+                        run()
+                    except SystemExit as e:
+                        if e.code != 0:
+                            traceback.print_exc()
+                    except Exception as e:
+                        f.write(f'{c.Red}Error in {cmd}:{c.Color_Off}\n')
+                        traceback.print_exc()
+            finally:
+                sys.argv = old_argv
+        msg = [f.getvalue()]
+    else:
+        msg = []
+        cp = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, check=False,
+                            universal_newlines=True)
+        # watch ignores the return code, hence also do it here.
+        # if cp.returncode != 0:
+        #     raise Exception(
+        #         '\n'
+        #         f'$ {cmd}  # Return code: {cp.returncode}\n'
+        #         f'{cp.stdout}\n'
+        #         f'{cp.stderr}'
+        #     )
+        if cp.stdout:
+            msg.append(cp.stdout)
+        if cp.stderr:
+            msg.append(cp.stderr)
 
     msg = '\n'.join(msg).split('\n')
 
@@ -131,13 +211,15 @@ class Draw:
             self.data.extend(lines)
 
 
-def main(screen, cmd='ls --color ~/', interval=60, color=None):
-    idle_thresh = 30 * 60  # 30 min
+def main(screen, cmd='ls --color ~/', interval=60, color=None, py=False):
+    idle_thresh = 5 * 60  # 30 min
 
     # ToDo: implement color argument (At the moment always True)
 
     if not isinstance(interval, int):
         interval = int(interval)
+    if interval < 60 and os.getuid() != 1000:  # uid==1000 is typically for private computers -> user can do what he/she wants
+        interval = 60
 
     with Input(sigint_event=True) as input_generator:
         schedule_next_frame = input_generator.scheduled_event_trigger(TimeEvent)
@@ -162,7 +244,7 @@ def main(screen, cmd='ls --color ~/', interval=60, color=None):
                     draw.move(e, height=height)
             elif event in ['<Ctrl-j>', '<SPACE>'] or isinstance(event, TimeEvent):
                 action = 'exec'
-                msg, last_exec = get_msg(cmd)
+                msg, last_exec = get_msg(cmd, py)
                 draw.data = []
                 draw(msg)
                 idle = False
@@ -170,7 +252,10 @@ def main(screen, cmd='ls --color ~/', interval=60, color=None):
                 action = 'nothing'
 
             draw.header_data = []
-            pre = f'Every {interval}s: {cmd}'
+            if py:
+                pre = f'Every {interval}s: {cmd}  # (py mode)'
+            else:
+                pre = f'Every {interval}s: {cmd}'
             post = f' {socket.gethostname()}: {last_exec}'
             fillerlen = width - len(pre) - len(post)
             draw.header(
@@ -201,12 +286,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--color', action='store_true', help='interpret ANSI color and style sequences (Ignored, always active)')
     parser.add_argument('-n', '--interval', help='seconds to wait between updates', default=60)
+    parser.add_argument('--py', action='store_true', help='Parse the command to be a python script and call it with runpy, i.e., avoid the import overhead with the second call.')
     parser.add_argument('cmd')
     args = vars(parser.parse_args())
     print(args)
 
     terminal_title = f'{socket.gethostname()}: {os.path.basename(sys.argv[0])} {shlex.join(sys.argv[1:])}'
     print(f'\33]0;{terminal_title}\a', end='', flush=True)  # https://stackoverflow.com/a/47262154/5766934
+
+    if args['py']:
+        if sys.path[0] == os.fspath(Path(__file__).parent):
+            sys.path.pop(0)
 
     with FullscreenWindow() as screen:
         main(screen, **args)

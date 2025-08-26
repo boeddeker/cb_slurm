@@ -168,7 +168,7 @@ def get_color(num_str, den_str):
 
     if ratio <= 0.7:
         return c.Green
-    elif ratio <= 0.9:
+    elif ratio <= 0.95:
         return c.Yellow
     else:
         return c.Red
@@ -200,16 +200,15 @@ def merge_tres_tres_used(tres, tres_used):
     return new
 
 
-
-
 def main(filter='gpu'):
     stdout = subprocess.run(
-        f"sinfo --json",
+        # f"sinfo --json",  # pre 23
+        f"scontrol show node --json",  # since 23
         check=True, shell=True, stdout=subprocess.PIPE,
         universal_newlines=True).stdout
     data = json.loads(stdout)
 
-    delete = {
+    delete = list({
         'architecture': 'x86_64',
         'burstbuffer_network_address': '',
         'boards': 1,
@@ -255,7 +254,27 @@ def main(filter='gpu'):
         'idle_cpus': 112,
         # 'tres_used': 'cpu=16,mem=128G,gres/gpu=4,gres/gpu:a100=4',
         'tres_weighted': 16.0,
-    }.keys()
+    }.keys()) + [
+        'cluster_name',
+        'specialized_cores',
+        # 'cpu_load',
+        # 'free_mem',
+        'effective_cpus',
+        'specialized_cpus',
+        'energy',
+        'external_sensors',
+        'power',
+        # 'gres_drained',
+        'instance_id',
+        'instance_type',
+        'specialized_memory',
+        # 'hostname',
+        'resume_after',
+        # 'reservation',
+        'alloc_idle_cpus',
+        'version',
+        # 'tres_used/tres',
+    ]
 
     table = []
     table2 = []
@@ -267,7 +286,7 @@ def main(filter='gpu'):
         # 'free_memory',
         # 'cpus',
         # 'gres',
-        # 'gres_drained',
+        'gres_drained',
         # 'gres_used',
         'state',
         'state_flags',
@@ -281,10 +300,18 @@ def main(filter='gpu'):
     ]
 
     for node in data['nodes']:
-        if filter in node['hostname']:
+        if filter in node['hostname'] or 'dgx' in node['hostname']:
             for k in delete:
-                del node[k]
-
+                if k in node:
+                    del node[k]
+            for k in node:
+                if isinstance(node[k], dict):
+                    if 'set' in node[k]:
+                        if node[k]['set'] is True:
+                            if node[k]['infinite'] is False:
+                                node[k] = node[k]['number']
+                        else:
+                            node[k] = '??'
             node['tres_used/tres'] = merge_tres_tres_used(node['tres'], node['tres_used'])
             del node['tres_used']
             del node['tres']
